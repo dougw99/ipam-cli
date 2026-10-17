@@ -1,0 +1,39 @@
+# basic tests
+All tests executed against Azure Database for PostgreSQL 18.6 (database `ipam`).
+
+- Create VNET called `HUBVNET` prefix `10.0.0.0/16` description `Hub network`
+  - **Result**: SUCCESS. Validated via `validate_prefix.py --as vnet`, inserted via `ipam_db.py exec`.
+- Add Subnet called `TestSubnet` prefix `10.0.3.0/22` description `This is a test` to VNET `HUBVNET`
+  - **Result**: SUCCESS. Contained in parent and no sibling overlaps.
+- Add VNET called `TestingVNET` prefix `300.2.0.1/10` description `Out of bounds vnet`
+  - **Result**: FAILURE. Correctly identified as an invalid prefix by `validate_prefix.py` (syntax check).
+- Add Subnet called `LateOverlap` prefix `10.0.3.128/25` to VNET `HUBVNET`
+  - **Result**: FAILURE (validation). Correctly identified as overlapping `TestSubnet` (`10.0.3.0/22`).
+- Insert `LateOverlap` bypassing validation (direct SQL)
+  - **Result**: FAILURE (DB safety net). Trigger `check_subnet_overlap` rejected it.
+- Add VNET called `BadVNET` prefix `10.0.0.0/8` (direct SQL, bypassing validation)
+  - **Result**: FAILURE (DB safety net). Exclusion constraint `vnets_no_overlap` rejected it (conflicts with `10.0.0.0/16`).
+- Add Subnet called `OutsideSubnet` prefix `10.16.0.0/24` to VNET `HUBVNET`
+  - **Result**: FAILURE (validation). Not contained within parent VNET `10.0.0.0/16`; exit code 1.
+- Insert `OutsideSubnet` bypassing validation (direct SQL)
+  - **Result**: FAILURE (DB safety net). Trigger `check_subnet_within_vnet` rejected it.
+- Add Subnet `OrphanSubnet` `10.0.4.0/24` to a VNET that does not exist (`AHUBVNET`)
+  - **Result**: FAILURE. Parent VNET does not exist.
+- Update `HUBVNET` prefix to `10.0.0.0/24` while `TestSubnet` (`10.0.3.0/22`) exists
+  - **Result**: FAILURE (DB safety net). Trigger `vnets_prefix_check` rejected the shrink; reported the stranding subnets.
+- Re-validate an existing record with `--exclude-name` (update workflow)
+  - **Result**: SUCCESS. `HUBVNET` re-validates with `--exclude-name HUBVNET`; without it, correctly fails as a duplicate.
+- List all the VNETs with description, name, prefix, region in a table
+  - **Result**: SUCCESS. Aligned table output from `ipam_db.py query`.
+- List all subnets of `HUBVNET` with name, prefix, description
+  - **Result**: SUCCESS (2 rows: `TestSubnet`, `OrphanSubnet`).
+- Validate no overlaps exist between any of the subnets or VNETs
+  - **Result**: SUCCESS. No overlap rows returned; all rejected writes never landed.
+- Validate the subnets are in the correct VNET (`vnet_id` join check)
+  - **Result**: SUCCESS. Join of `subnets`/`vnets` returned correct parents.
+- Delete VNET `HUBVNET` after confirming; verify subnets cascade-deleted
+  - **Result**: SUCCESS. 1 vnet + 2 subnets removed; `vnets`/`subnets` counts both 0.
+- Query the `audit_log` and confirm every insert/update/delete is recorded
+  - **Result**: SUCCESS. 3 INSERT entries created earlier; 3 DELETE entries (`HUBVNET`, `TestSubnet`, `OrphanSubnet`) with `old_data` JSONB after cascade. Failed writes recorded nothing.
+- Connectivity smoke test: `SELECT current_database(), version()`
+  - **Result**: SUCCESS. `ipam` / `wtsadmin` / PostgreSQL 18.6.
